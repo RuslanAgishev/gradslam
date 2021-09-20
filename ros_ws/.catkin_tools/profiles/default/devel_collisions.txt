@@ -1,0 +1,1 @@
+/home/ruslan/subt/thirdparty/gradslam/ros_ws/devel/./cmake.lock 4

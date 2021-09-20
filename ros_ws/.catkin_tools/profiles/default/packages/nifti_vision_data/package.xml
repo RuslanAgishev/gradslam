@@ -1,0 +1,17 @@
+<package format="2">
+  <name>nifti_vision_data</name>
+  <version>1.1.0</version>
+  <description>NIFTi vision data.</description>
+  <maintainer email="tpetricek@gmail.com">Tomas Petricek</maintainer>
+  <license>BSD</license>
+  
+  <author>Tomas Petricek</author>
+  <author>Karel Zimmermann</author>
+  
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <exec_depend>rosbag</exec_depend>
+  <exec_depend>static_transform_mux</exec_depend>
+  <exec_depend>tf_remapper_cpp</exec_depend>
+</package>
+

@@ -1,0 +1,5 @@
+tradr-ugv-base/nifti_vision_data
+/home/ruslan/subt/thirdparty/gradslam/ros_ws/devel/.private/nifti_vision_data/cmake.lock /home/ruslan/subt/thirdparty/gradslam/ros_ws/devel/./cmake.lock
+/home/ruslan/subt/thirdparty/gradslam/ros_ws/devel/.private/nifti_vision_data/share/nifti_vision_data/cmake/nifti_vision_dataConfig-version.cmake /home/ruslan/subt/thirdparty/gradslam/ros_ws/devel/share/nifti_vision_data/cmake/nifti_vision_dataConfig-version.cmake
+/home/ruslan/subt/thirdparty/gradslam/ros_ws/devel/.private/nifti_vision_data/share/nifti_vision_data/cmake/nifti_vision_dataConfig.cmake /home/ruslan/subt/thirdparty/gradslam/ros_ws/devel/share/nifti_vision_data/cmake/nifti_vision_dataConfig.cmake
+/home/ruslan/subt/thirdparty/gradslam/ros_ws/devel/.private/nifti_vision_data/lib/pkgconfig/nifti_vision_data.pc /home/ruslan/subt/thirdparty/gradslam/ros_ws/devel/lib/pkgconfig/nifti_vision_data.pc
