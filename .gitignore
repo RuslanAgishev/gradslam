@@ -142,9 +142,9 @@ log/
 
 # Tutorials data
 ICL/
+TUM/
 ros_ws/src/gradslam_ros/data/
 ros_ws/build/
 ros_ws/devel/
 ros_ws/logs/
 ros_ws/src/tradr-ugv-base/
-
