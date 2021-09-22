@@ -11,7 +11,7 @@ from gradslam import Pointclouds, RGBDImages
 # ROS
 import rospy
 from cv_bridge import CvBridge, CvBridgeError
-from sensor_msgs.msg import Image, CameraInfo
+from sensor_msgs.msg import Image, CameraInfo, PointCloud2
 from nav_msgs.msg import Path
 from geometry_msgs.msg import PoseStamped
 import message_filters
@@ -20,15 +20,15 @@ from ros_numpy import msgify, numpify
 from tf.transformations import quaternion_from_matrix
 
 
-class Processor:
-    def __init__(self, height: int = 240, width: int = 320):
+class GradslamROS:
+    def __init__(self, odometry='gt', height: int = 240, width: int = 320):
         self.bridge = CvBridge()
         self.tf = tf2_ros.Buffer()
         self.tf_sub = tf2_ros.TransformListener(self.tf)
         self.world_frame = 'subt'
-        self.camera_frame = 'X1/base_link/front_realsense_optical'
+        self.camera_frame = 'X1_ground_truth'  # 'X1/base_link/front_realsense_optical'
         self.device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-        self.slam = PointFusion(odom='gradicp', dsratio=1, device=self.device)
+        self.slam = PointFusion(odom=odometry, dsratio=1, device=self.device)
         self.width, self.height = width, height
         self.pointclouds = Pointclouds(device=self.device)
         self.initial_pose = torch.eye(4, dtype=torch.float32, device=self.device).view(1, 1, 4, 4)
@@ -37,6 +37,7 @@ class Processor:
         self.route = Path()
         self.route.header.frame_id = self.world_frame
         self.route_pub = rospy.Publisher('~route', Path, queue_size=2)
+        self.pc_pub = rospy.Publisher('~cloud', PointCloud2, queue_size=1)
 
         # Subscribe to topics
         caminfo_sub = message_filters.Subscriber('/X1/front_rgbd/optical/camera_info', CameraInfo)
@@ -50,28 +51,24 @@ class Processor:
 
     def callback(self, rgb_msg, depth_msg, caminfo_msg):
         t0 = time()
-        # try:
-        #     tf = self.tf.lookup_transform(self.world_frame, self.camera_frame,
-        #                                   rospy.Time.now(), rospy.Duration.from_sec(1.0))
-        # except tf2_ros.TransformException as ex:
-        #     rospy.logerr('Could not transform from world %s to camera %s: %s.',
-        #                  self.world_frame, self.camera_frame, ex)
-        #     return
-        # T = numpify(tf.transform)
-        # T = torch.as_tensor(T).view(1, 1, 4, 4)
+        try:
+            tf = self.tf.lookup_transform(self.world_frame, self.camera_frame,
+                                          rospy.Time.now(), rospy.Duration.from_sec(1.0))
+        except (tf2_ros.TransformException, tf2_ros.ExtrapolationException):
+            rospy.logerr('Could not transform from world %s to camera %s: %s.',
+                         self.world_frame, self.camera_frame, ex)
+            return
+        T = numpify(tf.transform)
+        pose = torch.as_tensor(T, dtype=torch.float32).view(1, 1, 4, 4)
         try:
             # get rgb image
             rgb_image = self.bridge.imgmsg_to_cv2(rgb_msg, rgb_msg.encoding)
             rgb_image = np.asarray(rgb_image, dtype=float)
-            rgb_image = cv2.resize(
-                rgb_image, (self.width, self.height), interpolation=cv2.INTER_LINEAR
-            )
+            rgb_image = cv2.resize(rgb_image, (self.width, self.height), interpolation=cv2.INTER_LINEAR)
             # get depth image
             depth_image = self.bridge.imgmsg_to_cv2(depth_msg, depth_msg.encoding)
             depth_image = np.asarray(depth_image, dtype=np.int64)
-            depth_image = cv2.resize(
-                depth_image, (self.width, self.height), interpolation=cv2.INTER_NEAREST,
-            )
+            depth_image = cv2.resize(depth_image, (self.width, self.height), interpolation=cv2.INTER_NEAREST)
         except CvBridgeError as e:
             rospy.logerr(e)
             return
@@ -87,7 +84,7 @@ class Processor:
         depth_image = torch.from_numpy(depth_image).view(1, 1, w, h, 1)
 
         # create gradslam input
-        live_frame = RGBDImages(rgb_image, depth_image, intrins).to(self.device)
+        live_frame = RGBDImages(rgb_image, depth_image, intrins, pose).to(self.device)
         rospy.logdebug('Data preprocessing took: %.3f', time()-t0)
 
         # SLAM inference
@@ -97,7 +94,7 @@ class Processor:
             self.initialized = True
         self.pointclouds, live_frame.poses = self.slam.step(self.pointclouds, live_frame, self.prev_frame)
         self.prev_frame = live_frame
-        rospy.loginfo(f"Pose: {live_frame.poses}")
+        rospy.loginfo(f"Position: {live_frame.poses[..., :3, 3]}")
         rospy.logdebug('SLAM inference took: %.3f', time() - t0)
 
         # publish odometry / path
@@ -118,10 +115,21 @@ class Processor:
         self.route.header.stamp = rospy.Time.now()
         self.route_pub.publish(self.route)
 
+        # publish point cloud
+        n_pts = self.pointclouds.points_padded.shape[1]
+        cloud = np.zeros((n_pts,), dtype=[('x', 'f4'), ('y', 'f4'), ('z', 'f4')])
+        for i, f in enumerate(['x', 'y', 'z']):
+            cloud[f] = self.pointclouds.points_padded[..., i].cpu().numpy()
+        pc_msg = msgify(PointCloud2, cloud)
+        pc_msg.header.stamp = rospy.Time.now()
+        pc_msg.header.frame_id = self.world_frame
+        self.pc_pub.publish(pc_msg)
+
 
 if __name__ == '__main__':
-    rospy.init_node('bag2data', log_level=rospy.DEBUG)
-    ip = Processor()
+    rospy.init_node('gradslam_ros', log_level=rospy.DEBUG)
+    odometry = rospy.get_param('~odometry')  # gt, icp, gradicp
+    proc = GradslamROS(odometry=odometry)
     try:
         rospy.spin()
     except KeyboardInterrupt:

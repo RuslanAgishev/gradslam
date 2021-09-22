@@ -2,14 +2,13 @@
 
 import numpy as np
 import cv2
-import matplotlib.pyplot as plt
-from torch import nn
+import torch
 import os
 from time import time
 
 import rospy
 from cv_bridge import CvBridge, CvBridgeError
-from sensor_msgs.msg import Image, CompressedImage, CameraInfo
+from sensor_msgs.msg import Image, CameraInfo
 import message_filters
 import tf2_ros
 from ros_numpy import msgify, numpify
@@ -22,7 +21,7 @@ class Processor:
         self.tf = tf2_ros.Buffer()
         self.tf_sub = tf2_ros.TransformListener(self.tf)
         self.world_frame = 'subt'
-        self.camera_frame = 'X1/base_link/front_realsense_optical'
+        self.camera_frame = 'X1_ground_truth'  # 'X1/base_link/front_realsense_optical'
         self.folder_name = 'test'  # 'explorer_x1_rgbd_traj/living_room_traj1_frei_png'
         self.rgb_path = os.path.join(rospkg.RosPack().get_path('gradslam_ros'),
                                      f'data/{self.folder_name}/rgb/')
@@ -63,8 +62,12 @@ class Processor:
         try:
             # get rgb image
             rgb_image = self.bridge.imgmsg_to_cv2(rgb_msg, rgb_msg.encoding)
+            rgb_image = np.asarray(rgb_image, dtype=float)
+            rgb_image = cv2.resize(rgb_image, (self.width, self.height), interpolation=cv2.INTER_LINEAR)
             # get depth image
             depth_image = self.bridge.imgmsg_to_cv2(depth_msg, depth_msg.encoding)
+            depth_image = np.asarray(depth_image, dtype=np.int64)
+            depth_image = cv2.resize(depth_image, (self.width, self.height), interpolation=cv2.INTER_NEAREST)
         except CvBridgeError as e:
             rospy.logerr(e)
             return
