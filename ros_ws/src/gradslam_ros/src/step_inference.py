@@ -7,8 +7,10 @@ import torch
 import os
 from time import time
 from gradslam.slam.pointfusion import PointFusion
+from gradslam.slam.icpslam import ICPSLAM
 from gradslam import Pointclouds, RGBDImages
 from threading import RLock
+from scipy import interpolate
 # ROS
 import rospy
 from cv_bridge import CvBridge, CvBridgeError
@@ -21,6 +23,43 @@ from ros_numpy import msgify, numpify
 from tf.transformations import quaternion_from_matrix
 
 
+def interpolate_missing_pixels(
+        image: np.ndarray,
+        mask: np.ndarray,
+        method: str = 'nearest',
+        fill_value: int = 0
+):
+    """
+    :param image: a 2D image
+    :param mask: a 2D boolean image, True indicates missing values
+    :param method: interpolation method, one of
+        'nearest', 'linear', 'cubic'.
+    :param fill_value: which value to use for filling up data outside the
+        convex hull of known pixel values.
+        Default is 0, Has no effect for 'nearest'.
+    :return: the image with missing values interpolated
+    """
+
+    h, w = image.shape[:2]
+    xx, yy = np.meshgrid(np.arange(w), np.arange(h))
+
+    known_x = xx[~mask]
+    known_y = yy[~mask]
+    known_v = image[~mask]
+    missing_x = xx[mask]
+    missing_y = yy[mask]
+
+    interp_values = interpolate.griddata(
+        (known_x, known_y), known_v, (missing_x, missing_y),
+        method=method, fill_value=fill_value
+    )
+
+    interp_image = image.copy()
+    interp_image[missing_y, missing_x] = interp_values
+
+    return interp_image
+
+
 class GradslamROS:
     def __init__(self, odometry='gt', height: int = 240, width: int = 320):
         self.bridge = CvBridge()
@@ -28,9 +67,10 @@ class GradslamROS:
         self.tf_sub = tf2_ros.TransformListener(self.tf)
         self.world_frame = 'subt'
         self.robot_frame = 'X1_ground_truth'
-        self.camera_frame = 'X1/base_link/front_realsense_optical'
+        self.camera = 'front'  # 'right', 'front'
+        self.camera_frame = f'X1/base_link/{self.camera}_realsense_optical'
         self.device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-        self.slam = PointFusion(odom=odometry, dsratio=1, device=self.device)
+        self.slam = PointFusion(odom=odometry, dsratio=4, device=self.device)
         self.width, self.height = width, height
         self.pointclouds = Pointclouds(device=self.device)
         self.prev_frame = None
@@ -40,19 +80,19 @@ class GradslamROS:
         self.pc_pub = rospy.Publisher('~cloud', PointCloud2, queue_size=1)
         self.extrinsics_lock = RLock()
         self.map_step = 16
-        self.max_depth_range = 10.0
+        self.depth_pub = rospy.Publisher('~depth_proc', Image, queue_size=1)
 
         self.robot2camera = self.get_extrinsics()
-        rospy.loginfo(f'Got extrinsics: {numpify(self.robot2camera.transform)}')
+        rospy.logdebug(f'Got extrinsics: {self.robot2camera}')
 
         # Subscribe to topics
-        caminfo_sub = message_filters.Subscriber('/X1/front_rgbd/optical/camera_info', CameraInfo)
-        rgb_sub = message_filters.Subscriber('/X1/front_rgbd/optical/image_raw', Image)
-        depth_sub = message_filters.Subscriber('/X1/front_rgbd/depth/optical/image_raw', Image)
+        caminfo_sub = message_filters.Subscriber(f'/X1/{self.camera}_rgbd/optical/camera_info', CameraInfo)
+        rgb_sub = message_filters.Subscriber(f'/X1/{self.camera}_rgbd/optical/image_raw', Image)
+        depth_sub = message_filters.Subscriber(f'/X1/{self.camera}_rgbd/depth/optical/image_raw', Image)
 
         # Synchronize the topics by time
         ats = message_filters.ApproximateTimeSynchronizer(
-            [rgb_sub, depth_sub, caminfo_sub], queue_size=1, slop=0.1)
+            [rgb_sub, depth_sub, caminfo_sub], queue_size=5, slop=0.05)
         ats.registerCallback(self.callback)
 
     def get_extrinsics(self):
@@ -61,6 +101,7 @@ class GradslamROS:
                 try:
                     robot2camera = self.tf.lookup_transform(self.robot_frame, self.camera_frame,
                                                             rospy.Time.now(), rospy.Duration.from_sec(1.0))
+                    robot2camera = numpify(robot2camera.transform)
                     return robot2camera
                 except (tf2_ros.TransformException, tf2_ros.ExtrapolationException) as ex:
                     rospy.logwarn('Could not transform from robot %s to camera %s: %s.',
@@ -71,13 +112,14 @@ class GradslamROS:
         try:
             world2robot = self.tf.lookup_transform(self.world_frame, self.robot_frame,
                                           rospy.Time.now(), rospy.Duration.from_sec(1.0))
+            world2robot = numpify(world2robot.transform)
         except (tf2_ros.TransformException, tf2_ros.ExtrapolationException) as ex:
             rospy.logwarn('Could not transform from world %s to robot %s: %s.',
                           self.world_frame, self.robot_frame, ex)
             return
         rospy.logdebug('Transformation search took: %.3f', time() - t0)
-        T = numpify(world2robot.transform) @ numpify(self.robot2camera.transform)
-        pose = torch.as_tensor(T, dtype=torch.float32).view(1, 1, 4, 4)
+        world2camera = world2robot @ self.robot2camera
+        pose = torch.as_tensor(world2camera, dtype=torch.float32).view(1, 1, 4, 4)
 
         try:
             # get rgb image
@@ -88,16 +130,26 @@ class GradslamROS:
                                    interpolation=cv2.INTER_LINEAR)
             # get depth image
             depth_image = self.bridge.imgmsg_to_cv2(depth_msg, depth_msg.encoding)
-            # depth_image = self.bridge.imgmsg_to_cv2(depth_msg, desired_encoding='passthrough')
             depth_image = np.asarray(depth_image, dtype=np.float32)
-            depth_image = np.clip(depth_image, 0.0, self.max_depth_range)
-            depth_image = cv2.resize(depth_image,
-                                     (self.width, self.height),
-                                     interpolation=cv2.INTER_NEAREST)
+            if self.slam.odom != 'gt':
+                # depth_image = cv2.medianBlur(depth_image, 5)  # to filter inf outliers
+                # depth_image[depth_image == np.inf] = np.max(depth_image[depth_image != np.inf])  # np.nan, 10.0
+                depth_image = interpolate_missing_pixels(depth_image,
+                                                         mask=np.asarray(depth_image == np.inf),
+                                                         method='nearest',
+                                                         fill_value=10.0)
+                # depth_image = cv2.resize(depth_image,
+                #                          (self.width, self.height),
+                #                          interpolation=cv2.INTER_NEAREST)
+                # depth_proc_msg = msgify(Image, depth_image, encoding=depth_msg.encoding)
+                # depth_proc_msg.header = depth_msg.header
+                # self.depth_pub.publish(depth_proc_msg)
         except CvBridgeError as e:
             rospy.logerr(e)
             return
+
         # get intrinsic params
+        # TODO: subscribe ones in another callback function
         k = torch.as_tensor(caminfo_msg.K, dtype=torch.float32).view(3, 3)
         K = torch.eye(4)
         K[:3, :3] = k
@@ -115,11 +167,12 @@ class GradslamROS:
         # SLAM inference
         t0 = time()
         self.pointclouds, live_frame.poses = self.slam.step(self.pointclouds, live_frame, self.prev_frame)
-        self.prev_frame = live_frame
-        rospy.loginfo(f"Position: {live_frame.poses[..., :3, 3].squeeze()}")
+        self.prev_frame = live_frame if self.slam.odom != 'gt' else None
+        rospy.logdebug(f"Position: {live_frame.poses[..., :3, 3].squeeze()}")
         rospy.logdebug('SLAM inference took: %.3f', time() - t0)
 
         # publish odometry / path
+        # TODO: publish ground truth path as well
         t0 = time()
         assert live_frame.poses.shape == (1, 1, 4, 4)
         pose = PoseStamped()

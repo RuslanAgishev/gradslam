@@ -89,12 +89,12 @@ class GradslamROS:
             t1 = time()
             live_frame = self.rgbdimages[:, s]
             # print(torch.min(live_frame.depth_image), torch.max(live_frame.depth_image), live_frame.depth_image.dtype)
-            if s == 0 and live_frame.poses is None:
-                live_frame.poses = initial_poses
+            # if s == 0 and live_frame.poses is None:
+            #     live_frame.poses = initial_poses
 
             pointclouds, live_frame.poses = self.slam.step(pointclouds, live_frame, prev_frame)
             rospy.logdebug(f'SLAM step took {(time() - t1):.3f} sec')
-            prev_frame = live_frame
+            prev_frame = live_frame if self.slam.odom != 'gt' else None
 
             # publish odometry / path
             assert live_frame.poses.shape == (1, 1, 4, 4)
