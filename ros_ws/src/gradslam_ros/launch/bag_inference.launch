@@ -3,18 +3,17 @@
     <arg name="rviz" default="true"/>
     <arg name="from_bag" default="true"/>
     <arg name="bag" default="$(find gradslam_ros)/data/explorer_x1_rgbd_traj_2021-09-22-14-34-21.bag"/>
+    <arg name="start" default="0.0"/>
+    <arg name="rate" default="1.0"/>
     <arg name="odom" default="gt"/>
 
     <group if="$(arg from_bag)">
         <param name="use_sim_time" value="true"/>
-        <include file="$(dirname)/play_bag.launch">
-            <arg name="bag" value="$(arg bag)"/>
-        </include>
+        <include file="$(dirname)/play_bag.launch" pass_all_args="true"/>
     </group>
 
     <!-- Step inference -->
-<!--    <node name="gradslam_ros" pkg="gradslam_ros" type="step_inference.py" output="screen">-->
-    <node name="gradslam_ros" pkg="gradslam_ros" type="tum2ros.py" output="screen">
+    <node name="gradslam_ros" pkg="gradslam_ros" type="step_inference.py" output="screen">
         <param name="odometry" value="$(arg odom)"/>
     </node>
 

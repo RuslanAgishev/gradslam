@@ -88,8 +88,10 @@ class GradslamROS:
                 break
             t1 = time()
             live_frame = self.rgbdimages[:, s]
+            # print(torch.min(live_frame.depth_image), torch.max(live_frame.depth_image), live_frame.depth_image.dtype)
             if s == 0 and live_frame.poses is None:
                 live_frame.poses = initial_poses
+
             pointclouds, live_frame.poses = self.slam.step(pointclouds, live_frame, prev_frame)
             rospy.logdebug(f'SLAM step took {(time() - t1):.3f} sec')
             prev_frame = live_frame
@@ -134,7 +136,7 @@ class GradslamROS:
 
 
 if __name__ == "__main__":
-    rospy.init_node('gradslam_ros', log_level=rospy.DEBUG)
+    rospy.init_node('gradslam_ros', log_level=rospy.INFO)
     dataset_path = '/home/ruslan/subt/thirdparty/gradslam/examples/tutorials/TUM/'
     odometry = rospy.get_param('~odometry')  # gt, icp, gradicp
     proc = GradslamROS(dataset_path=dataset_path, odometry=odometry, seqlen=500)
