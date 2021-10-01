@@ -11,6 +11,7 @@ from gradslam.slam.icpslam import ICPSLAM
 from gradslam import Pointclouds, RGBDImages
 from threading import RLock
 from scipy import interpolate
+from pytorch3d.transforms.so3 import so3_relative_angle
 # ROS
 import rospy
 from cv_bridge import CvBridge, CvBridgeError
@@ -166,10 +167,26 @@ class GradslamROS:
 
         # SLAM inference
         t0 = time()
+        live_frame.poses.requires_grad = True
+        optimizer = torch.optim.Adam([live_frame.poses], lr=0.05)
+        optimizer.zero_grad()
+
         self.pointclouds, live_frame.poses = self.slam.step(self.pointclouds, live_frame, self.prev_frame)
         self.prev_frame = live_frame if self.slam.odom != 'gt' else None
         rospy.logdebug(f"Position: {live_frame.poses[..., :3, 3].squeeze()}")
         rospy.logdebug('SLAM inference took: %.3f', time() - t0)
+
+        # optimization
+        assert live_frame.poses.shape == pose_gt.shape
+        T, T_gt = live_frame.poses.squeeze(0), pose_gt.squeeze(0)
+        T_gt = T_gt.to(T.device)
+        # R_dist = 1. - so3_relative_angle(T[:, :3, :3], T_gt[:, :3, :3], cos_angle=True)
+        t_dist = ((T[:, :3, 3] - T_gt[:, :3, 3])**2).sum(1)
+        # loss = R_dist + t_dist
+        loss = t_dist
+        loss.backward(retain_graph=True)
+        optimizer.step()
+        rospy.loginfo("Loss: {0}".format(loss.detach().item()))
 
         # publish odometry / path
         # TODO: publish ground truth path as well
@@ -181,7 +198,7 @@ class GradslamROS:
         pose.pose.position.x = live_frame.poses[..., 0, 3]
         pose.pose.position.y = live_frame.poses[..., 1, 3]
         pose.pose.position.z = live_frame.poses[..., 2, 3]
-        q = quaternion_from_matrix(live_frame.poses[0, 0].cpu().numpy())
+        q = quaternion_from_matrix(live_frame.detach().poses[0, 0].cpu().numpy())
         pose.pose.orientation.x = q[0]
         pose.pose.orientation.y = q[1]
         pose.pose.orientation.z = q[2]
@@ -196,9 +213,9 @@ class GradslamROS:
         cloud = np.zeros((n_pts,), dtype=[('x', 'f4'), ('y', 'f4'), ('z', 'f4'),
                                           ('r', 'f4'), ('g', 'f4'), ('b', 'f4')])
         for i, f in enumerate(['x', 'y', 'z']):
-            cloud[f] = self.pointclouds.points_padded[..., i].squeeze().cpu().numpy()[::self.map_step]
+            cloud[f] = self.pointclouds.points_padded[..., i].detach().squeeze().cpu().numpy()[::self.map_step]
         for i, f in enumerate(['r', 'g', 'b']):
-            cloud[f] = self.pointclouds.colors_padded[..., i].squeeze().cpu().numpy()[::self.map_step] / 255.
+            cloud[f] = self.pointclouds.colors_padded[..., i].detach().squeeze().cpu().numpy()[::self.map_step] / 255.
         pc_msg = msgify(PointCloud2, cloud)
         pc_msg.header.stamp = rospy.Time.now()
         pc_msg.header.frame_id = self.world_frame
