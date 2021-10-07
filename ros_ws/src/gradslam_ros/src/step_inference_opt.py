@@ -139,9 +139,9 @@ class GradslamROS:
                                                          mask=np.asarray(depth_image == np.inf),
                                                          method='nearest',
                                                          fill_value=10.0)
-                # depth_image = cv2.resize(depth_image,
-                #                          (self.width, self.height),
-                #                          interpolation=cv2.INTER_NEAREST)
+                depth_image = cv2.resize(depth_image,
+                                         (self.width, self.height),
+                                         interpolation=cv2.INTER_NEAREST)
                 # depth_proc_msg = msgify(Image, depth_image, encoding=depth_msg.encoding)
                 # depth_proc_msg.header = depth_msg.header
                 # self.depth_pub.publish(depth_proc_msg)
@@ -168,7 +168,7 @@ class GradslamROS:
         # SLAM inference
         t0 = time()
         live_frame.poses.requires_grad = True
-        optimizer = torch.optim.Adam([live_frame.poses], lr=0.05)
+        optimizer = torch.optim.Adam([live_frame.poses], lr=0.01)
         optimizer.zero_grad()
 
         self.pointclouds, live_frame.poses = self.slam.step(self.pointclouds, live_frame, self.prev_frame)
