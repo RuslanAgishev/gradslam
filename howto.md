@@ -17,7 +17,14 @@ installation):
 
 Prerequisite: install [ROS](https://www.ros.org/)
 
-Build a map from RGBD images input:
+Build the `gradslam_ros` wrapper node:
+```bash
+cd ./ros_ws/
+catkin_make
+source devel/setup.bash
+```
+
+Construct a map from RGBD images input:
 ```
 roslaunch gradslam_ros bag_inference.launch odom:=gt
 ```
